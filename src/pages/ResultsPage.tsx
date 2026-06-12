@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
   formatBudget,
@@ -7,6 +7,10 @@ import {
   resolveFlightSearch,
   type FlightSearchCriteria,
 } from '../lib/flightSearch';
+import {
+  fetchTravelpayoutsFlights,
+  type TravelpayoutsFlight,
+} from '../lib/travelpayoutsApi';
 
 type Level = 'Low' | 'Medium' | 'High';
 type PriceTrend = 'rise' | 'stable' | 'drop';
@@ -301,6 +305,193 @@ function selectAirlineVariants(
       ],
     },
   ];
+}
+
+type TravelpayoutsApiResponse = {
+  success?: boolean;
+  data?: TravelpayoutsFlight[] | null;
+  error?: string | null;
+};
+
+function extractAirportCode(location: string): string | null {
+  const match = location.match(/\(([A-Za-z]{3})\)/);
+  return match ? match[1].toUpperCase() : null;
+}
+
+function airlineLabel(code?: string): string {
+  if (!code) return 'Unknown airline';
+  const names: Record<string, string> = {
+    AA: 'American Airlines',
+    AF: 'Air France',
+    AZ: 'ITA Airways',
+    BA: 'British Airways',
+    DL: 'Delta Air Lines',
+    EK: 'Emirates',
+    IB: 'Iberia',
+    KL: 'KLM',
+    LH: 'Lufthansa',
+    QR: 'Qatar Airways',
+    TK: 'Turkish Airlines',
+    TP: 'TAP Air Portugal',
+    UA: 'United Airlines',
+    VS: 'Virgin Atlantic',
+  };
+  return names[code.toUpperCase()] ?? code.toUpperCase();
+}
+
+function formatApiDate(iso?: string, fallbackIso?: string): string {
+  if (iso) {
+    const parsed = new Date(iso);
+    if (!Number.isNaN(parsed.getTime())) {
+      return new Intl.DateTimeFormat(undefined, {
+        weekday: 'short',
+        month: 'short',
+        day: 'numeric',
+      }).format(parsed);
+    }
+  }
+  return fallbackIso ? formatSearchDate(fallbackIso) : '—';
+}
+
+function formatEurPrice(amount: number): string {
+  return `€${Math.round(amount).toLocaleString()}`;
+}
+
+function derivePriceTrend(price: number, prices: number[]): PriceTrend {
+  if (prices.length < 2) return 'stable';
+  const sorted = [...prices].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  if (price < median * 0.97) return 'drop';
+  if (price > median * 1.03) return 'rise';
+  return 'stable';
+}
+
+function deriveDealMetrics(
+  price: number,
+  prices: number[],
+  stops: number
+): Pick<
+  MockFlight,
+  | 'dealScore'
+  | 'savingsPercent'
+  | 'averageFare'
+  | 'confidence'
+  | 'risk'
+  | 'priceTrend'
+> {
+  const validPrices = prices.filter((p) => p > 0);
+  const average =
+    validPrices.length > 0
+      ? validPrices.reduce((sum, p) => sum + p, 0) / validPrices.length
+      : price;
+  const savingsPercent =
+    average > 0 ? Math.round(((average - price) / average) * 100) : 0;
+
+  let dealScore = 72 + Math.min(18, Math.max(-12, savingsPercent));
+  if (stops === 0) dealScore += 4;
+  if (stops >= 2) dealScore -= 4;
+  dealScore = Math.max(60, Math.min(95, dealScore));
+
+  const confidence: Level =
+    savingsPercent >= 10 && stops <= 1
+      ? 'High'
+      : savingsPercent >= 0
+        ? 'Medium'
+        : 'Low';
+  const risk: Level =
+    savingsPercent >= 5 ? 'Low' : savingsPercent >= 0 ? 'Medium' : 'High';
+
+  return {
+    dealScore,
+    savingsPercent,
+    averageFare: formatEurPrice(average),
+    confidence,
+    risk,
+    priceTrend: derivePriceTrend(price, validPrices),
+  };
+}
+
+function buildApiAnalysis(
+  routeName: string,
+  month: string,
+  savingsPercent: number,
+  stops: number,
+  priceTrend: PriceTrend
+): string[] {
+  const savingsLine =
+    savingsPercent > 0
+      ? `This fare is ${savingsPercent}% below the average ${routeName} price for ${month}.`
+      : savingsPercent < 0
+        ? `This fare is ${Math.abs(savingsPercent)}% above the average ${routeName} price for ${month}.`
+        : `This fare is near the average ${routeName} price for ${month}.`;
+
+  const convenienceLine =
+    stops === 0
+      ? 'Nonstop itinerary with competitive total travel time.'
+      : `${stops} stop${stops > 1 ? 's' : ''} with a manageable connection on this route.`;
+
+  const trendLine =
+    priceTrend === 'rise'
+      ? 'Live pricing suggests fares may increase as departure approaches.'
+      : priceTrend === 'drop'
+        ? 'Live pricing is softer than peers — good timing on this window.'
+        : 'Live pricing has been stable for similar departures on this route.';
+
+  return [savingsLine, convenienceLine, trendLine];
+}
+
+function convertTravelpayoutsToMockFlights(
+  items: TravelpayoutsFlight[],
+  criteria: FlightSearchCriteria
+): MockFlight[] {
+  const { origin, destination, departureDate, returnDate } = criteria;
+  const routeName = routeLabel(origin, destination);
+  const month = monthLabelFromIso(departureDate);
+  const originSlug = slugify(origin);
+  const destSlug = slugify(destination);
+  const prices = items
+    .map((item) => item.price ?? item.value ?? 0)
+    .filter((price) => price > 0);
+
+  return items
+    .filter((item) => (item.price ?? item.value ?? 0) > 0)
+    .map((item, index) => {
+      const price = item.price ?? item.value ?? 0;
+      const stops = item.transfers ?? 0;
+      const metrics = deriveDealMetrics(price, prices, stops);
+      const airline = airlineLabel(item.airline);
+      const flightKey = item.flight_number?.replace(/\s+/g, '') ?? String(index);
+
+      return {
+        id: `${originSlug}-${destSlug}-tp-${item.airline ?? 'xx'}-${flightKey}`,
+        airline,
+        origin,
+        destination,
+        departureDate: formatApiDate(item.departure_at, departureDate),
+        returnDate: formatApiDate(item.return_at, returnDate),
+        stops,
+        price: formatEurPrice(price),
+        ...metrics,
+        analysis: buildApiAnalysis(
+          routeName,
+          month,
+          metrics.savingsPercent,
+          stops,
+          metrics.priceTrend
+        ),
+      };
+    });
+}
+
+function parseTravelpayoutsResponse(
+  response: unknown,
+  criteria: FlightSearchCriteria
+): MockFlight[] {
+  const payload = response as TravelpayoutsApiResponse;
+  if (payload.success === false || !Array.isArray(payload.data)) {
+    return [];
+  }
+  return convertTravelpayoutsToMockFlights(payload.data, criteria);
 }
 
 function buildPersonalizedFlights(
@@ -949,15 +1140,78 @@ function SearchSummary() {
 export default function ResultsPage() {
   const [searchParams] = useSearchParams();
   const criteria = resolveFlightSearch(searchParams);
-  const mockFlights = useMemo(
-    () => buildPersonalizedFlights(criteria),
-    [
-      criteria?.origin,
-      criteria?.destination,
-      criteria?.departureDate,
-      criteria?.returnDate,
-    ]
-  );
+  const [flights, setFlights] = useState<MockFlight[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!criteria) {
+      setFlights([]);
+      setLoading(false);
+      setFetchError(null);
+      return;
+    }
+
+    const activeCriteria = criteria;
+    let cancelled = false;
+
+    async function loadFlights() {
+      setLoading(true);
+      setFetchError(null);
+
+      const originCode = extractAirportCode(activeCriteria.origin);
+      const destinationCode = extractAirportCode(activeCriteria.destination);
+
+      if (!originCode || !destinationCode) {
+        if (!cancelled) {
+          setFlights(buildPersonalizedFlights(activeCriteria));
+          setFetchError('Could not resolve airport codes from your search.');
+          setLoading(false);
+        }
+        return;
+      }
+
+      try {
+        const response = await fetchTravelpayoutsFlights({
+          origin: originCode,
+          destination: destinationCode,
+          departureDate: activeCriteria.departureDate,
+          returnDate: activeCriteria.returnDate,
+        });
+        const apiFlights = parseTravelpayoutsResponse(response, activeCriteria);
+
+        if (!cancelled) {
+          if (apiFlights.length > 0) {
+            setFlights(apiFlights);
+          } else {
+            setFlights(buildPersonalizedFlights(activeCriteria));
+            setFetchError('No live fares found for this route.');
+          }
+        }
+      } catch {
+        if (!cancelled) {
+          setFlights(buildPersonalizedFlights(activeCriteria));
+          setFetchError('Unable to load live fares right now.');
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
+
+    void loadFlights();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    criteria?.origin,
+    criteria?.destination,
+    criteria?.departureDate,
+    criteria?.returnDate,
+  ]);
+
   const searchedRoute = criteria
     ? routeLabel(criteria.origin, criteria.destination)
     : null;
@@ -969,9 +1223,9 @@ export default function ResultsPage() {
   };
 
   const bestFlight =
-    mockFlights.length === 0
+    flights.length === 0
       ? null
-      : [...mockFlights].sort((a, b) => b.dealScore - a.dealScore)[0];
+      : [...flights].sort((a, b) => b.dealScore - a.dealScore)[0];
 
   const pickAnalysisLine = (analysis: string[], matcher: RegExp) =>
     analysis.find((line) => matcher.test(line));
@@ -1031,7 +1285,21 @@ export default function ResultsPage() {
 
       <SearchSummary />
 
-      {bestFlight ? (
+      {loading ? (
+        <section className="rounded-xl border border-slate-800 bg-slate-900/30 p-5">
+          <p className="text-sm text-slate-400">Fetching live fares…</p>
+        </section>
+      ) : null}
+
+      {!loading && fetchError ? (
+        <section className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
+          <p className="text-sm text-amber-300">
+            {fetchError} Showing estimated fares instead.
+          </p>
+        </section>
+      ) : null}
+
+      {!loading && bestFlight ? (
         (() => {
           const recommendation = buildRecommendationCopy(bestFlight);
           return (
@@ -1085,7 +1353,7 @@ export default function ResultsPage() {
         })()
       ) : null}
 
-      {mockFlights.length === 0 ? (
+      {!loading && flights.length === 0 ? (
         <section className="rounded-xl border border-dashed border-slate-800 bg-slate-900/20 p-8 text-center">
           <p className="text-sm text-slate-400">
             No opportunities to show yet.{' '}
@@ -1097,8 +1365,9 @@ export default function ResultsPage() {
         </section>
       ) : null}
 
+      {!loading ? (
       <ul className="grid gap-4">
-        {mockFlights.map((flight) => (
+        {flights.map((flight) => (
           <FlightCard
             key={flight.id}
             flight={flight}
@@ -1106,6 +1375,7 @@ export default function ResultsPage() {
           />
         ))}
       </ul>
+      ) : null}
     </section>
   );
 }
