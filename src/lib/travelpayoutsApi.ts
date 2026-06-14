@@ -9,6 +9,8 @@ export type TravelpayoutsFlight = {
     flight_number?: string;
     departure_at?: string;
     return_at?: string;
+    depart_date?: string;
+    return_date?: string;
     transfers?: number;
     duration?: number;
     link?: string;
@@ -20,18 +22,19 @@ export type TravelpayoutsFlight = {
     departureDate: string;
     returnDate?: string;
   }) {
-    const token = import.meta.env.VITE_TRAVELPAYOUTS_TOKEN;
+   
   
-    const url = new URL('https://api.travelpayouts.com/aviasales/v3/prices_for_dates');
+    const url = new URL('http://localhost:3001/api/flights');
   
     url.searchParams.set('origin', params.origin);
     url.searchParams.set('destination', params.destination);
-    url.searchParams.set('departure_at', params.departureDate);
+    url.searchParams.set('beginning_of_period', params.departureDate.slice(0, 7) + '-01');
+url.searchParams.set('period_type', 'month');
     url.searchParams.set('currency', 'eur');
     url.searchParams.set('market', 'pt');
     url.searchParams.set('sorting', 'price');
     url.searchParams.set('limit', '10');
-    url.searchParams.set('token', token);
+    
   
     if (params.returnDate) {
       url.searchParams.set('return_at', params.returnDate);

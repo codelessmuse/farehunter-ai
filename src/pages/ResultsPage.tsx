@@ -315,8 +315,29 @@ type TravelpayoutsApiResponse = {
 
 function extractAirportCode(location: string): string | null {
   const match = location.match(/\(([A-Za-z]{3})\)/);
-  return match ? match[1].toUpperCase() : null;
+  if (match) return match[1].toUpperCase();
+
+  const normalized = location
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+
+  const cityCodes: Record<string, string> = {
+    lisbon: 'LIS',
+    lisboa: 'LIS',
+    'sao paulo': 'SAO',
+    'rio de janeiro': 'RIO',
+    'new york': 'NYC',
+    london: 'LON',
+    paris: 'PAR',
+    madrid: 'MAD',
+    barcelona: 'BCN',
+  };
+
+  return cityCodes[normalized] ?? null;
 }
+
 
 function airlineLabel(code?: string): string {
   if (!code) return 'Unknown airline';
@@ -467,8 +488,8 @@ function convertTravelpayoutsToMockFlights(
         airline,
         origin,
         destination,
-        departureDate: formatApiDate(item.departure_at, departureDate),
-        returnDate: formatApiDate(item.return_at, returnDate),
+        departureDate: formatApiDate(item.departure_at ?? item.depart_date, departureDate),
+        returnDate: formatApiDate(item.return_at ?? item.return_date, returnDate),
         stops,
         price: formatEurPrice(price),
         ...metrics,
