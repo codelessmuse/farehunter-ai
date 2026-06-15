@@ -1,13 +1,17 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import cors from 'cors';
-
+import path from 'path';
+import { fileURLToPath } from 'url';
 dotenv.config();
 
 const app = express();
 app.use(cors());
-const PORT = 3001;
+const PORT = process.env.PORT || 3001;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
+app.use(express.static(path.join(__dirname, 'dist')));
 app.get('/api/flights', async (req, res) => {
   try {
     const token = process.env.TRAVELPAYOUTS_TOKEN || process.env.VITE_TRAVELPAYOUTS_TOKEN;
@@ -35,7 +39,9 @@ app.get('/api/flights', async (req, res) => {
     });
   }
 });
-
+app.get(/.*/, (req, res) => {
+  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+});
 app.listen(PORT, () => {
   console.log(`FareHunter API server running on http://localhost:${PORT}`);
 });

@@ -24,7 +24,7 @@ export type TravelpayoutsFlight = {
   }) {
    
   
-    const url = new URL('http://localhost:3001/api/flights');
+    const url = new URL('/api/flights', window.location.origin); 
   
     url.searchParams.set('origin', params.origin);
     url.searchParams.set('destination', params.destination);
